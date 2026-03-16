@@ -16,7 +16,7 @@ LEAGUE_MAP = {
     "soccer_russia_premier_league": 235,
 }
 
-CURRENT_SEASON = 2024
+CURRENT_SEASON = 2025
 
 class FootballStatsClient:
     def __init__(self, api_key: str):
