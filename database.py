@@ -61,18 +61,19 @@ class Database:
             return row["id"]
 
     async def get_predictions_to_check(self, delay_hours: int = 3) -> list:
-        """Возвращает прогнозы матчей которые завершились (начало + delay_hours)."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=delay_hours)
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT * FROM predictions
-                WHERE is_correct IS NULL
-                  AND match_timestamp IS NOT NULL
-                  AND match_timestamp <= $1
-                ORDER BY match_timestamp ASC
-                LIMIT 50
-            """, cutoff)
-            return [dict(r) for r in rows]
+    """Возвращает прогнозы матчей которые завершились (начало + delay_hours)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=delay_hours)
+    async with self.pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT * FROM predictions
+            WHERE is_correct IS NULL
+              AND match_timestamp IS NOT NULL
+              AND match_timestamp <= $1
+            ORDER BY match_timestamp ASC
+            LIMIT 50
+        """, cutoff.replace(tzinfo=None))
+        return [dict(r) for r in rows]
+
 
     async def get_pending_predictions(self, user_id: int) -> list:
         async with self.pool.acquire() as conn:
