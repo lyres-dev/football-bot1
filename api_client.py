@@ -11,7 +11,6 @@ class OddsAPIClient:
         self.api_key = api_key
 
     def _estimate_btts(self, h2h_odds: dict, total_odds: dict) -> dict:
-        """Estimate BTTS probability from h2h + totals since API doesn't support btts market."""
         try:
             over_key = next((k for k in total_odds if k.startswith("Over")), None)
             over_prob = (1 / total_odds[over_key]) if over_key else 0.45
@@ -19,9 +18,7 @@ class OddsAPIClient:
             draw_prob = (1 / draw_odd) if draw_odd else 0.25
             btts_yes_prob = min(0.85, over_prob * 0.7 + draw_prob * 0.5)
             btts_no_prob = 1 - btts_yes_prob
-            yes_odd = round(1 / btts_yes_prob, 2)
-            no_odd = round(1 / btts_no_prob, 2)
-            return {"Yes": yes_odd, "No": no_odd}
+            return {"Yes": round(1 / btts_yes_prob, 2), "No": round(1 / btts_no_prob, 2)}
         except Exception:
             return {"Yes": 1.85, "No": 1.95}
 
