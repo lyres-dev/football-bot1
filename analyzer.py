@@ -5,7 +5,8 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent"
+
 
 class FootballAnalyzer:
     def __init__(self, api_key: str):
