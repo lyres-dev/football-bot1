@@ -1,5 +1,4 @@
 import aiohttp
-import asyncio
 from datetime import datetime, timezone
 import logging
 
@@ -11,13 +10,27 @@ class OddsAPIClient:
     def __init__(self, api_key: str):
         self.api_key = api_key
 
+    def _estimate_btts(self, h2h_odds: dict, total_odds: dict) -> dict:
+        """Estimate BTTS probability from h2h + totals since API doesn't support btts market."""
+        try:
+            over_key = next((k for k in total_odds if k.startswith("Over")), None)
+            over_prob = (1 / total_odds[over_key]) if over_key else 0.45
+            draw_odd = h2h_odds.get("Draw", 0)
+            draw_prob = (1 / draw_odd) if draw_odd else 0.25
+            btts_yes_prob = min(0.85, over_prob * 0.7 + draw_prob * 0.5)
+            btts_no_prob = 1 - btts_yes_prob
+            yes_odd = round(1 / btts_yes_prob, 2)
+            no_odd = round(1 / btts_no_prob, 2)
+            return {"Yes": yes_odd, "No": no_odd}
+        except Exception:
+            return {"Yes": 1.85, "No": 1.95}
+
     async def get_upcoming_matches(self, sport: str, days_ahead: int = 7) -> list[dict]:
-        """Fetch upcoming matches with odds from The Odds API."""
         url = f"{BASE_URL}/sports/{sport}/odds"
         params = {
             "apiKey": self.api_key,
             "regions": "eu",
-            "markets": "h2h,totals,btts",
+            "markets": "h2h,totals",
             "oddsFormat": "decimal",
             "dateFormat": "iso",
         }
@@ -41,10 +54,8 @@ class OddsAPIClient:
                 if commence_time < now:
                     continue
 
-                # Parse odds from bookmakers
                 h2h_odds = {}
                 total_odds = {}
-                btts_odds = {}
 
                 for bookmaker in event.get("bookmakers", [])[:3]:
                     for market in bookmaker.get("markets", []):
@@ -55,12 +66,8 @@ class OddsAPIClient:
                             for outcome in market["outcomes"]:
                                 key = f"{outcome['name']}_{outcome.get('point', 2.5)}"
                                 total_odds[key] = outcome["price"]
-                        elif market["key"] == "btts" and not btts_odds:
-                            for outcome in market["outcomes"]:
-                                btts_odds[outcome["name"]] = outcome["price"]
 
-                # Format date string for Moscow time (UTC+3)
-                moscow_time = commence_time.replace(tzinfo=timezone.utc)
+                btts_odds = self._estimate_btts(h2h_odds, total_odds)
                 date_str = commence_time.strftime("%d.%m.%Y %H:%M UTC")
 
                 matches.append({
@@ -82,10 +89,8 @@ class OddsAPIClient:
         return matches[:15]
 
     async def get_sports(self) -> list[dict]:
-        """Get list of available sports/leagues."""
         url = f"{BASE_URL}/sports"
         params = {"apiKey": self.api_key}
-
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
                 return await resp.json()
