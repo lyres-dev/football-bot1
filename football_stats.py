@@ -130,25 +130,28 @@ class FootballStatsClient:
                     }
         return {}
 
-    async def get_full_team_stats(self, team_name: str, league_key: str) -> dict:
-        league_code = LEAGUE_MAP.get(league_key)
-        if not league_code:
-            logger.warning(f"League not supported: {league_key}")
-            return {}
-        team_id = await self.search_team_id(team_name, league_code)
-        if not team_id:
-            return {}
-        last_matches, season_stats = await asyncio.gather(
-            self.get_last_matches(team_id),
-            self.get_team_season_stats(team_id, league_code),
-            return_exceptions=True
-        )
-        return {
-            "team_id": team_id,
-            "team_name": team_name,
-            "last_matches": last_matches if isinstance(last_matches, list) else [],
-            "season_stats": season_stats if isinstance(season_stats, dict) else {},
-        }
+async def get_full_team_stats(self, team_name: str, league_key: str) -> dict:
+    league_code = LEAGUE_MAP.get(league_key)
+    if not league_code:
+        logger.warning(f"League not supported: {league_key}")
+        return {}
+    team_id = await self.search_team_id(team_name, league_code)
+    if not team_id:
+        return {}
+    
+    # Пауза чтобы не превысить лимит 10 запросов/минуту
+    await asyncio.sleep(1)
+    last_matches = await self.get_last_matches(team_id)
+    await asyncio.sleep(1)
+    season_stats = await self.get_team_season_stats(team_id, league_code)
+    
+    return {
+        "team_id": team_id,
+        "team_name": team_name,
+        "last_matches": last_matches if isinstance(last_matches, list) else [],
+        "season_stats": season_stats if isinstance(season_stats, dict) else {},
+    }
+
 
     async def get_match_result(self, home_team: str, away_team: str) -> dict | None:
         return None
