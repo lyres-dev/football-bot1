@@ -33,50 +33,48 @@ class FootballStatsClient:
                 return await resp.json()
 
     async def search_team(self, team_name: str, league_id: int = None) -> int | None:
-    params = {"search": team_name}
-    if league_id:
-        params["league"] = league_id
-        params["season"] = CURRENT_SEASON
-    data = await self._get("teams", params)
-    results = data.get("response", [])
-    if results:
-        team = results[0]["team"]
-        logger.info(f"Found team: {team['name']} (id={team['id']}) for search '{team_name}'")
-        return team["id"]
-    logger.warning(f"Team not found: {team_name}")
-    return None
+        params = {"search": team_name}
+        if league_id:
+            params["league"] = league_id
+            params["season"] = CURRENT_SEASON
+        data = await self._get("teams", params)
+        results = data.get("response", [])
+        if results:
+            team = results[0]["team"]
+            logger.info(f"Found team: {team['name']} (id={team['id']}) for '{team_name}'")
+            return team["id"]
+        logger.warning(f"Team not found: {team_name}")
+        return None
 
-
-async def get_last_matches(self, team_id: int, count: int = 5) -> list:
-    data = await self._get("fixtures", {
-        "team": team_id,
-        "last": count,
-        "status": "FT",
-        "season": CURRENT_SEASON,
-    })
-    logger.info(f"Got {len(data.get('response', []))} matches for team {team_id}")
-    matches = []
-    for fixture in data.get("response", []):
-        f = fixture["fixture"]
-        home = fixture["teams"]["home"]
-        away = fixture["teams"]["away"]
-        goals = fixture["goals"]
-        is_home = home["id"] == team_id
-        team_goals = goals["home"] if is_home else goals["away"]
-        opp_goals = goals["away"] if is_home else goals["home"]
-        team_won = home["winner"] if is_home else away["winner"]
-        matches.append({
-            "date": f["date"][:10],
-            "home": home["name"],
-            "away": away["name"],
-            "score": f"{goals['home']}:{goals['away']}",
-            "team_goals": team_goals,
-            "opp_goals": opp_goals,
-            "result": "W" if team_won else ("L" if team_won is False else "D"),
-            "venue": "home" if is_home else "away",
+    async def get_last_matches(self, team_id: int, count: int = 5) -> list:
+        data = await self._get("fixtures", {
+            "team": team_id,
+            "last": count,
+            "status": "FT",
+            "season": CURRENT_SEASON,
         })
-    return matches
-
+        logger.info(f"Got {len(data.get('response', []))} matches for team {team_id}")
+        matches = []
+        for fixture in data.get("response", []):
+            f = fixture["fixture"]
+            home = fixture["teams"]["home"]
+            away = fixture["teams"]["away"]
+            goals = fixture["goals"]
+            is_home = home["id"] == team_id
+            team_goals = goals["home"] if is_home else goals["away"]
+            opp_goals = goals["away"] if is_home else goals["home"]
+            team_won = home["winner"] if is_home else away["winner"]
+            matches.append({
+                "date": f["date"][:10],
+                "home": home["name"],
+                "away": away["name"],
+                "score": f"{goals['home']}:{goals['away']}",
+                "team_goals": team_goals,
+                "opp_goals": opp_goals,
+                "result": "W" if team_won else ("L" if team_won is False else "D"),
+                "venue": "home" if is_home else "away",
+            })
+        return matches
 
     async def get_team_season_stats(self, team_id: int, league_id: int) -> dict:
         data = await self._get("teams/statistics", {
@@ -109,11 +107,11 @@ async def get_last_matches(self, team_id: int, count: int = 5) -> list:
         }
 
     async def get_full_team_stats(self, team_name: str, league_key: str) -> dict:
-        team_id = await self.search_team(team_name)
+        league_id = LEAGUE_MAP.get(league_key, 39)
+        team_id = await self.search_team(team_name, league_id)
         if not team_id:
             logger.warning(f"Team not found: {team_name}")
             return {}
-        league_id = LEAGUE_MAP.get(league_key, 39)
         last_matches, season_stats = await asyncio.gather(
             self.get_last_matches(team_id),
             self.get_team_season_stats(team_id, league_id),
