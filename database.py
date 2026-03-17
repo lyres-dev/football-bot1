@@ -10,7 +10,12 @@ class Database:
         self.pool = None
 
     async def connect(self):
-        self.pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"), ssl="require")
+        self.pool = await asyncpg.create_pool(
+    os.getenv("DATABASE_URL"),
+    ssl="require",
+    statement_cache_size=0
+)
+
         await self.create_tables()
         logger.info("Database connected")
 
