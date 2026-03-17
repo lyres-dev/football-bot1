@@ -31,41 +31,38 @@ class FootballStatsClient:
                 return await resp.json()
 
     async def search_team_id(self, team_name: str, league_code: str) -> int | None:
-    data = await self._get(f"competitions/{league_code}/teams")
-    teams = data.get("teams", [])
-    team_name_lower = team_name.lower().strip()
-    
-    # Сначала точное совпадение
-    for team in teams:
-        names = [
-            team.get("name", "").lower(),
-            team.get("shortName", "").lower(),
-            team.get("tla", "").lower(),
-        ]
-        if team_name_lower in names:
-            logger.info(f"Found team: {team['name']} (id={team['id']})")
-            return team["id"]
-    
-    # Потом частичное совпадение
-    for team in teams:
-        names = [
-            team.get("name", "").lower(),
-            team.get("shortName", "").lower(),
-        ]
-        for name in names:
-            if team_name_lower in name or name in team_name_lower:
+        data = await self._get(f"competitions/{league_code}/teams")
+        teams = data.get("teams", [])
+        team_name_lower = team_name.lower().strip()
+
+        for team in teams:
+            names = [
+                team.get("name", "").lower(),
+                team.get("shortName", "").lower(),
+                team.get("tla", "").lower(),
+            ]
+            if team_name_lower in names:
                 logger.info(f"Found team: {team['name']} (id={team['id']})")
                 return team["id"]
-    
-    # Совпадение по первому слову
-    first_word = team_name_lower.split()[0]
-    for team in teams:
-        if first_word in team.get("name", "").lower():
-            logger.info(f"Found team by first word: {team['name']} (id={team['id']})")
-            return team["id"]
-    
-    logger.warning(f"Team not found: {team_name} in {league_code}")
-    return None
+
+        for team in teams:
+            names = [
+                team.get("name", "").lower(),
+                team.get("shortName", "").lower(),
+            ]
+            for name in names:
+                if team_name_lower in name or name in team_name_lower:
+                    logger.info(f"Found team: {team['name']} (id={team['id']})")
+                    return team["id"]
+
+        first_word = team_name_lower.split()[0]
+        for team in teams:
+            if first_word in team.get("name", "").lower():
+                logger.info(f"Found team by first word: {team['name']} (id={team['id']})")
+                return team["id"]
+
+        logger.warning(f"Team not found: {team_name} in {league_code}")
+        return None
 
     async def get_last_matches(self, team_id: int, count: int = 5) -> list:
         data = await self._get(f"teams/{team_id}/matches", {
@@ -130,28 +127,24 @@ class FootballStatsClient:
                     }
         return {}
 
-async def get_full_team_stats(self, team_name: str, league_key: str) -> dict:
-    league_code = LEAGUE_MAP.get(league_key)
-    if not league_code:
-        logger.warning(f"League not supported: {league_key}")
-        return {}
-    team_id = await self.search_team_id(team_name, league_code)
-    if not team_id:
-        return {}
-    
-    # Пауза чтобы не превысить лимит 10 запросов/минуту
-    await asyncio.sleep(1)
-    last_matches = await self.get_last_matches(team_id)
-    await asyncio.sleep(1)
-    season_stats = await self.get_team_season_stats(team_id, league_code)
-    
-    return {
-        "team_id": team_id,
-        "team_name": team_name,
-        "last_matches": last_matches if isinstance(last_matches, list) else [],
-        "season_stats": season_stats if isinstance(season_stats, dict) else {},
-    }
-
+    async def get_full_team_stats(self, team_name: str, league_key: str) -> dict:
+        league_code = LEAGUE_MAP.get(league_key)
+        if not league_code:
+            logger.warning(f"League not supported: {league_key}")
+            return {}
+        team_id = await self.search_team_id(team_name, league_code)
+        if not team_id:
+            return {}
+        await asyncio.sleep(1)
+        last_matches = await self.get_last_matches(team_id)
+        await asyncio.sleep(1)
+        season_stats = await self.get_team_season_stats(team_id, league_code)
+        return {
+            "team_id": team_id,
+            "team_name": team_name,
+            "last_matches": last_matches if isinstance(last_matches, list) else [],
+            "season_stats": season_stats if isinstance(season_stats, dict) else {},
+        }
 
     async def get_match_result(self, home_team: str, away_team: str) -> dict | None:
         return None
