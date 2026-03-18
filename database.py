@@ -11,11 +11,10 @@ class Database:
 
     async def connect(self):
         self.pool = await asyncpg.create_pool(
-    os.getenv("DATABASE_URL"),
-    ssl="require",
-    statement_cache_size=0
-)
-
+            os.getenv("DATABASE_URL"),
+            ssl="require",
+            statement_cache_size=0
+        )
         await self.create_tables()
         logger.info("Database connected")
 
@@ -73,10 +72,17 @@ class Database:
                 WHERE is_correct IS NULL
                   AND match_timestamp IS NOT NULL
                   AND match_timestamp <= $1
+                  AND auto_checked = FALSE
                 ORDER BY match_timestamp ASC
                 LIMIT 50
             """, cutoff_naive)
             return [dict(r) for r in rows]
+
+    async def mark_prediction_checked(self, pred_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE predictions SET auto_checked=TRUE WHERE id=$1
+            """, pred_id)
 
     async def get_pending_predictions(self, user_id: int) -> list:
         async with self.pool.acquire() as conn:
