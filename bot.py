@@ -232,20 +232,73 @@ async def handle_analysis_choice(callback: types.CallbackQuery, state: FSMContex
         await callback.message.edit_text("❌ Ошибка анализа. Попробуй ещё раз.", reply_markup=analysis_keyboard())
 
 async def generate_auto_report(user_id: int, reply_func):
-    """Автоматически проверяет все прогнозы и генерирует отчёт."""
+    """Показываем отчёт сразу из базы, проверку запускаем в фоне."""
     all_preds = await db.get_all_predictions(user_id)
 
     if not all_preds:
         await reply_func("📊 У тебя ещё нет прогнозов. Выбери матч и получи первый прогноз!")
         return
 
-    # Проверяем незакрытые прогнозы через football-data
-    checked = 0
-    for pred in all_preds:
-        if pred.get("is_correct") is not None:
-            continue
-        if not stats_client:
-            continue
+    # Сначала показываем что уже есть в базе
+    resolved = [p for p in all_preds if p.get("is_correct") is not None]
+    pending = [p for p in all_preds if p.get("is_correct") is None]
+    correct = [p for p in resolved if p.get("is_correct") == True]
+
+    pct = round(len(correct) / len(resolved) * 100) if resolved else 0
+    emoji = "🔥" if pct >= 60 else "👍" if pct >= 40 else "📉"
+
+    text = f"📊 <b>ОТЧЁТ ПО ПРОГНОЗАМ</b>\n\n"
+    text += f"Всего прогнозов: {len(all_preds)}\n"
+    text += f"Проверено: {len(resolved)}\n"
+    text += f"Ожидают результата: {len(pending)}\n"
+    text += f"Точных: {len(correct)}\n"
+
+    if resolved:
+        text += f"{emoji} Точность: <b>{pct}%</b>\n\n"
+
+        by_type = {}
+        for p in resolved:
+            t = p["analysis_type"]
+            if t not in by_type:
+                by_type[t] = {"total": 0, "correct": 0}
+            by_type[t]["total"] += 1
+            if p.get("is_correct"):
+                by_type[t]["correct"] += 1
+
+        text += "━━━━━━━━━━━━━━━━━━━━\n"
+        text += "📈 <b>По типам:</b>\n"
+        for t, v in by_type.items():
+            p2 = round(v["correct"] / v["total"] * 100)
+            text += f"{ANALYSIS_NAMES.get(t, t)}: {v['correct']}/{v['total']} ({p2}%)\n"
+
+        text += "\n━━━━━━━━━━━━━━━━━━━━\n"
+        text += "🕐 <b>Результаты матчей:</b>\n"
+        for p in resolved[-10:]:
+            icon = "✅" if p["is_correct"] else "❌"
+            score = f"{p['result_home']}:{p['result_away']}" if p.get("result_home") is not None else "—"
+            text += f"{icon} {p['home_team']} vs {p['away_team']} [{score}] — {ANALYSIS_NAMES.get(p['analysis_type'], p['analysis_type'])}\n"
+    else:
+        text += "\n⏳ Результаты матчей ещё проверяются...\n"
+
+    if pending:
+        text += f"\n🔄 <i>Фоновая проверка {len(pending)} матчей запущена — результаты появятся автоматически</i>"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="report:auto")],
+        [InlineKeyboardButton(text="📋 Детали по матчу", callback_data="report:list")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:leagues")],
+    ])
+
+    await reply_func(text, parse_mode="HTML", reply_markup=kb)
+
+    # Запускаем проверку в фоне — не блокирует ответ
+    if pending and stats_client:
+        asyncio.create_task(check_pending_in_background(user_id, pending))
+
+
+async def check_pending_in_background(user_id: int, pending: list):
+    """Фоновая проверка результатов — не блокирует бота."""
+    for pred in pending:
         try:
             result = await stats_client.find_match_result(
                 pred["home_team"], pred["away_team"],
@@ -254,12 +307,26 @@ async def generate_auto_report(user_id: int, reply_func):
             )
             if result:
                 from scheduler import check_prediction_correct
-                is_correct, _ = await check_prediction_correct(pred, result["home_score"], result["away_score"])
-                await db.resolve_prediction(pred["id"], result["home_score"], result["away_score"], is_correct)
-                checked += 1
-            await asyncio.sleep(0.5)
+                is_correct, explanation = await check_prediction_correct(
+                    pred, result["home_score"], result["away_score"]
+                )
+                await db.resolve_prediction(
+                    pred["id"], result["home_score"], result["away_score"], is_correct
+                )
+                icon = "✅" if is_correct else "❌"
+                await bot.send_message(
+                    user_id,
+                    f"{icon} <b>Результат найден!</b>\n\n"
+                    f"⚽ {pred['home_team']} {result['home_score']}:{result['away_score']} {pred['away_team']}\n"
+                    f"🎯 {ANALYSIS_NAMES.get(pred['analysis_type'], pred['analysis_type'])}\n"
+                    f"📊 {explanation}\n\n"
+                    f"<i>Нажми /report чтобы увидеть обновлённый отчёт</i>",
+                    parse_mode="HTML"
+                )
+            await asyncio.sleep(1)
         except Exception as e:
-            logger.error(f"Auto check error for pred {pred['id']}: {e}")
+            logger.error(f"Background check error for pred {pred['id']}: {e}")
+
 
     # Перезагружаем с обновлёнными данными
     all_preds = await db.get_all_predictions(user_id)
