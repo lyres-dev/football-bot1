@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
+API_FOOTBALL_KEY = os.getenv("FOOTBALL_DATA_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -32,8 +32,6 @@ dp = Dispatcher(storage=MemoryStorage())
 odds_client = OddsAPIClient(ODDS_API_KEY)
 analyzer = FootballAnalyzer(GROQ_API_KEY)
 stats_client = FootballStatsClient(API_FOOTBALL_KEY) if API_FOOTBALL_KEY else None
-
-# ─── States ───────────────────────────────────────────────────────────────────
 
 class MatchStates(StatesGroup):
     choosing_league = State()
@@ -44,8 +42,6 @@ class ResultStates(StatesGroup):
     choosing_prediction = State()
     entering_score = State()
     confirming_correct = State()
-
-# ─── Keyboards ────────────────────────────────────────────────────────────────
 
 LEAGUES = {
     "soccer_epl": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 АПЛ",
@@ -95,7 +91,7 @@ def pending_predictions_keyboard(predictions):
     for pred in predictions:
         label = f"{pred['home_team']} vs {pred['away_team']} — {ANALYSIS_NAMES.get(pred['analysis_type'], pred['analysis_type'])}"
         buttons.append([InlineKeyboardButton(text=label, callback_data=f"resolve:{pred['id']}")])
-    buttons.append([InlineKeyboardButton(text="📊 Отчёт по всем", callback_data="stats:show")])
+    buttons.append([InlineKeyboardButton(text="📊 Полный отчёт", callback_data="stats:show")])
     buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:leagues")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -108,8 +104,6 @@ def correct_keyboard(pred_id: int):
         [InlineKeyboardButton(text="🔙 Назад", callback_data="results:menu")],
     ])
 
-# ─── Main handlers ─────────────────────────────────────────────────────────────
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -119,8 +113,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
         "⚽ Точный счёт\n"
         "🎯 Тотал голов\n"
         "🔥 Обе команды забьют\n"
-        "📊 Статистика команд\n"
-        "📋 Трекер точности прогнозов\n\n"
+        "📊 Статистика + Рейтинг Эло\n"
+        "💎 Value Bet детектор\n"
+        "📋 Автоотчёт по прогнозам\n\n"
         "Выбери лигу для начала:"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=leagues_keyboard())
@@ -137,24 +132,28 @@ async def cmd_results(message: types.Message, state: FSMContext):
     await state.clear()
     await show_results_menu(message.answer, message.from_user.id, state)
 
+@dp.message(Command("report"))
+async def cmd_report(message: types.Message, state: FSMContext):
+    await state.clear()
+    await show_full_report(message.answer, message.from_user.id)
+
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     text = (
         "📖 <b>Команды бота:</b>\n\n"
         "/start — начать работу\n"
         "/leagues — выбрать лигу\n"
-        "/results — ввести результаты матчей\n"
+        "/results — ввести результаты вручную\n"
+        "/report — полный отчёт по прогнозам\n"
         "/help — эта справка\n\n"
         "💡 <b>Как пользоваться:</b>\n"
         "1. Выбери лигу и матч\n"
         "2. Получи прогноз — он сохранится\n"
-        "3. После матча зайди в /results\n"
-        "4. Введи счёт — бот посчитает точность\n\n"
+        "3. Бот автоматически проверит результат через 3 часа\n"
+        "4. /report — смотри точность своих прогнозов\n\n"
         "⚠️ <i>Прогнозы носят информационный характер.</i>"
     )
     await message.answer(text, parse_mode="HTML")
-
-# ─── League & Match handlers ───────────────────────────────────────────────────
 
 @dp.callback_query(lambda c: c.data.startswith("league:"))
 async def handle_league_choice(callback: types.CallbackQuery, state: FSMContext):
@@ -209,16 +208,14 @@ async def handle_analysis_choice(callback: types.CallbackQuery, state: FSMContex
     home = match.get("home_team", "?")
     away = match.get("away_team", "?")
     await callback.message.edit_text(
-        f"🤖 <b>Анализирую:</b> {home} vs {away}\n⏳ {ANALYSIS_NAMES.get(analysis_type)}...\n<i>Загружаю статистику команд...</i>",
+        f"🤖 <b>Анализирую:</b> {home} vs {away}\n⏳ {ANALYSIS_NAMES.get(analysis_type)}...\n<i>Загружаю статистику и считаю Эло...</i>",
         parse_mode="HTML"
     )
     try:
-        # Загружаем статистику команд если есть API ключ
         home_stats, away_stats = None, None
         if stats_client:
             league_key = data.get("league_key", "soccer_epl")
             try:
-                import asyncio
                 home_stats, away_stats = await asyncio.gather(
                     stats_client.get_full_team_stats(home, league_key),
                     stats_client.get_full_team_stats(away, league_key),
@@ -229,18 +226,21 @@ async def handle_analysis_choice(callback: types.CallbackQuery, state: FSMContex
             except Exception as e:
                 logger.warning(f"Stats fetch error: {e}")
 
+        elo_data = elo.predict_match(home, away, home_stats, away_stats)
+        value_bets = elo.detect_value_bets(elo_data, match)
+
         result = await analyzer.analyze_with_elo(
             match, analysis_type, home_stats, away_stats,
-            elo_data=elo.predict_match(home, away, home_stats, away_stats),
-            value_bets=elo.detect_value_bets(
-                elo.predict_match(home, away, home_stats, away_stats), match
-            )
+            elo_data=elo_data,
+            value_bets=value_bets
         )
-        # Сохраняем прогноз в БД
+
         pred_id = await db.save_prediction(callback.from_user.id, match, analysis_type, result)
+
         back_btn = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Другой анализ", callback_data=f"match:{data.get('match_idx', 0)}")],
             [InlineKeyboardButton(text="📋 Мои прогнозы", callback_data="results:menu")],
+            [InlineKeyboardButton(text="📊 Отчёт", callback_data="stats:show")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:leagues")],
         ])
         await callback.message.edit_text(
@@ -251,27 +251,61 @@ async def handle_analysis_choice(callback: types.CallbackQuery, state: FSMContex
         logger.error(f"Analysis error: {e}")
         await callback.message.edit_text("❌ Ошибка анализа. Попробуй ещё раз.", reply_markup=analysis_keyboard())
 
-# ─── Results handlers ──────────────────────────────────────────────────────────
-
 async def show_results_menu(reply_func, user_id: int, state: FSMContext):
     predictions = await db.get_pending_predictions(user_id)
     if not predictions:
-        stats = await db.get_stats(user_id)
-        text = "📋 <b>Нет прогнозов без результата</b>\n\n"
-        if stats["resolved"] > 0:
-            pct = round(stats["correct"] / stats["resolved"] * 100)
-            text += f"📊 Твоя статистика: {stats['correct']}/{stats['resolved']} ({pct}% точность)"
-        text += "\n\nСначала получи прогноз на матч!"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📊 Полный отчёт", callback_data="stats:show")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:leagues")],
         ])
-        await reply_func(text, parse_mode="HTML", reply_markup=kb)
+        await reply_func(
+            "📋 <b>Нет прогнозов без результата</b>\n\nВсе матчи уже проверены автоматически!",
+            parse_mode="HTML", reply_markup=kb
+        )
         return
-
-    text = "📋 <b>Прогнозы без результата:</b>\n\nВыбери матч чтобы ввести счёт:"
+    text = "📋 <b>Прогнозы без результата:</b>\n\nВыбери матч чтобы ввести счёт вручную:"
     await reply_func(text, parse_mode="HTML", reply_markup=pending_predictions_keyboard(predictions))
     await state.set_state(ResultStates.choosing_prediction)
+
+async def show_full_report(reply_func, user_id: int):
+    stats = await db.get_stats(user_id)
+    if stats["resolved"] == 0:
+        await reply_func(
+            "📊 <b>Статистика пуста</b>\n\nПолучи прогнозы — бот автоматически проверит результаты через 3 часа после матча!",
+            parse_mode="HTML"
+        )
+        return
+    pct = round(stats["correct"] / stats["resolved"] * 100)
+    emoji = "🔥" if pct >= 60 else "👍" if pct >= 40 else "📉"
+    text = f"📊 <b>ОТЧЁТ ПО ПРОГНОЗАМ</b>\n\n"
+    text += f"Всего прогнозов: {stats['total']}\n"
+    text += f"Проверено: {stats['resolved']}\n"
+    text += f"Точных: {stats['correct']}\n"
+    text += f"{emoji} Точность: <b>{pct}%</b>\n\n"
+    if stats["by_type"]:
+        text += "━━━━━━━━━━━━━━━━━━━━\n"
+        text += "📈 <b>По типам прогнозов:</b>\n"
+        for row in stats["by_type"]:
+            t = row["total"]
+            c = row["correct"] or 0
+            p = round(c / t * 100) if t > 0 else 0
+            name = ANALYSIS_NAMES.get(row["analysis_type"], row["analysis_type"])
+            text += f"{name}: {c}/{t} ({p}%)\n"
+    if stats["recent"]:
+        text += "\n━━━━━━━━━━━━━━━━━━━━\n"
+        text += "🕐 <b>Последние результаты:</b>\n"
+        for r in stats["recent"]:
+            icon = "✅" if r["is_correct"] else "❌"
+            score = f"{r['result_home']}:{r['result_away']}" if r["result_home"] is not None else "—"
+            auto = " 🤖" if r.get("auto_checked") else ""
+            text += f"{icon}{auto} {r['home_team']} vs {r['away_team']} [{score}]\n"
+    await reply_func(
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Ввести вручную", callback_data="results:menu")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:leagues")],
+        ])
+    )
 
 @dp.callback_query(lambda c: c.data == "results:menu")
 async def handle_results_menu(callback: types.CallbackQuery, state: FSMContext):
@@ -290,8 +324,8 @@ async def handle_resolve(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"⚽ <b>{pred['home_team']} vs {pred['away_team']}</b>\n"
         f"📅 {pred['match_date']}\n"
-        f"🎯 Тип прогноза: {ANALYSIS_NAMES.get(pred['analysis_type'], pred['analysis_type'])}\n\n"
-        f"Введи счёт матча в формате <b>2:1</b> (хозяева:гости):",
+        f"🎯 Тип: {ANALYSIS_NAMES.get(pred['analysis_type'], pred['analysis_type'])}\n\n"
+        f"Введи счёт в формате <b>2:1</b>:",
         parse_mode="HTML"
     )
 
@@ -305,16 +339,14 @@ async def handle_score_input(message: types.Message, state: FSMContext):
     except:
         await message.answer("❌ Неверный формат. Введи счёт как <b>2:1</b>", parse_mode="HTML")
         return
-
     data = await state.get_data()
     pred = data.get("resolving_pred")
     pred_id = data.get("resolving_pred_id")
     await state.update_data(home_score=home_score, away_score=away_score)
     await state.set_state(ResultStates.confirming_correct)
-
     await message.answer(
         f"⚽ Счёт: <b>{pred['home_team']} {home_score}:{away_score} {pred['away_team']}</b>\n\n"
-        f"Прогноз типа «{ANALYSIS_NAMES.get(pred['analysis_type'])}» — зашёл?",
+        f"Прогноз «{ANALYSIS_NAMES.get(pred['analysis_type'])}» — зашёл?",
         parse_mode="HTML",
         reply_markup=correct_keyboard(pred_id)
     )
@@ -324,22 +356,17 @@ async def handle_correct(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split(":")
     pred_id = int(parts[1])
     is_correct = parts[2] == "yes"
-
     data = await state.get_data()
     home_score = data.get("home_score", 0)
     away_score = data.get("away_score", 0)
-
     await db.resolve_prediction(pred_id, home_score, away_score, is_correct)
     await state.clear()
-
     result_text = "✅ Зашло! 🎉" if is_correct else "❌ Не зашло"
     stats = await db.get_stats(callback.from_user.id)
     pct = round(stats["correct"] / stats["resolved"] * 100) if stats["resolved"] > 0 else 0
-
     await callback.message.edit_text(
         f"{result_text}\n\n"
-        f"📊 Твоя статистика: <b>{stats['correct']}/{stats['resolved']} ({pct}%)</b>\n\n"
-        f"Хочешь ввести ещё результаты?",
+        f"📊 Статистика: <b>{stats['correct']}/{stats['resolved']} ({pct}%)</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📋 Ещё результаты", callback_data="results:menu")],
@@ -350,54 +377,7 @@ async def handle_correct(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(lambda c: c.data == "stats:show")
 async def handle_stats(callback: types.CallbackQuery, state: FSMContext):
-    stats = await db.get_stats(callback.from_user.id)
-
-    if stats["resolved"] == 0:
-        await callback.message.edit_text(
-            "📊 <b>Статистика пуста</b>\n\nПолучи прогнозы и введи результаты матчей!",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:leagues")]
-            ])
-        )
-        return
-
-    pct = round(stats["correct"] / stats["resolved"] * 100)
-    emoji = "🔥" if pct >= 60 else "👍" if pct >= 40 else "📉"
-
-    text = f"📊 <b>ОТЧЁТ ПО ПРОГНОЗАМ</b>\n\n"
-    text += f"Всего прогнозов: {stats['total']}\n"
-    text += f"Проверено: {stats['resolved']}\n"
-    text += f"Точных: {stats['correct']}\n"
-    text += f"{emoji} Точность: <b>{pct}%</b>\n\n"
-
-    if stats["by_type"]:
-        text += "━━━━━━━━━━━━━━━━━━━━\n"
-        text += "📈 <b>По типам прогнозов:</b>\n"
-        for row in stats["by_type"]:
-            t = row["total"]
-            c = row["correct"] or 0
-            p = round(c / t * 100) if t > 0 else 0
-            name = ANALYSIS_NAMES.get(row["analysis_type"], row["analysis_type"])
-            text += f"{name}: {c}/{t} ({p}%)\n"
-
-    if stats["recent"]:
-        text += "\n━━━━━━━━━━━━━━━━━━━━\n"
-        text += "🕐 <b>Последние результаты:</b>\n"
-        for r in stats["recent"]:
-            icon = "✅" if r["is_correct"] else "❌"
-            score = f"{r['result_home']}:{r['result_away']}" if r["result_home"] is not None else "—"
-            text += f"{icon} {r['home_team']} vs {r['away_team']} [{score}]\n"
-
-    await callback.message.edit_text(
-        text, parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Ввести результаты", callback_data="results:menu")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back:leagues")],
-        ])
-    )
-
-# ─── Back handlers ─────────────────────────────────────────────────────────────
+    await show_full_report(callback.message.edit_text, callback.from_user.id)
 
 @dp.callback_query(lambda c: c.data.startswith("back:"))
 async def handle_back(callback: types.CallbackQuery, state: FSMContext):
@@ -418,11 +398,8 @@ async def handle_back(callback: types.CallbackQuery, state: FSMContext):
         else:
             await callback.message.edit_text("🌍 Выбери лигу:", reply_markup=leagues_keyboard())
 
-# ─── Startup ───────────────────────────────────────────────────────────────────
-
 async def main():
     await db.connect()
-    # Запускаем планировщик автопроверки матчей
     if stats_client:
         scheduler = MatchScheduler(bot, stats_client)
         await scheduler.start()
@@ -432,3 +409,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
