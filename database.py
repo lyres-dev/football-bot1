@@ -137,5 +137,14 @@ class Database:
             row = await conn.fetchrow(
                 "SELECT * FROM predictions WHERE id=$1 AND user_id=$2", pred_id, user_id)
             return dict(row) if row else None
+async def get_all_predictions(self, user_id: int) -> list:
+    async with self.pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT * FROM predictions
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 50
+        """, user_id)
+        return [dict(r) for r in rows]
 
 db = Database()
