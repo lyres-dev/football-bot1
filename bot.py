@@ -45,6 +45,8 @@ LEAGUES = {
     "soccer_italy_serie_a": "🇮🇹 Серия А",
     "soccer_france_ligue_one": "🇫🇷 Лига 1",
     "soccer_uefa_champs_league": "🏆 Лига Чемпионов",
+    "soccer_uefa_europa_league": "🟠 Лига Европы",
+    "soccer_uefa_europa_conference_league": "⚪ Лига Конференций",
     "soccer_russia_premier_league": "🇷🇺 РПЛ",
 }
 
